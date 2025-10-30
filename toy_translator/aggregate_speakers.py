@@ -19,14 +19,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("data/gemini_output.json"),
-        help="Path to the Gemini response JSON (default: data/gemini_output.json).",
+        default=Path("tmp/gemini_output.json"),
+        help="Path to the Gemini response JSON (default: tmp/gemini_output.json).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/speakers.json"),
-        help="Where to write the aggregated speaker JSON (default: data/speakers.json).",
+        default=Path("tmp/speakers.json"),
+        help="Where to write the aggregated speaker JSON (default: tmp/speakers.json).",
     )
     return parser
 

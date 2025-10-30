@@ -23,14 +23,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--input",
         type=Path,
-        default=Path("data/source.json"),
-        help="Path to the JSON dataset produced from the XLSX file (default: data/source.json).",
+        default=Path("tmp/source.json"),
+        help="Path to the JSON dataset produced from the XLSX file (default: tmp/source.json).",
     )
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("data/gemini_output.json"),
-        help="Where to write the combined Gemini response (default: data/gemini_output.json).",
+        default=Path("tmp/gemini_output.json"),
+        help="Where to write the combined Gemini response (default: tmp/gemini_output.json).",
     )
     parser.add_argument(
         "--model",

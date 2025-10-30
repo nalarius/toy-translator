@@ -22,9 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output",
-        default=Path("data/source.json"),
+        default=Path("tmp/source.json"),
         type=Path,
-        help="Where to write the JSON output (default: data/source.json).",
+        help="Where to write the JSON output (default: tmp/source.json).",
     )
     return parser
 
@@ -83,4 +83,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

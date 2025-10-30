@@ -13,11 +13,12 @@ Toy Translator is a lightweight playground for taking localisation spreadsheets,
    ```
    GEMINI_API_KEY=your-secret-key
    ```
+   Generated artefacts default to the `tmp/` directory so the repository stays clean; override the paths with `--input`/`--output` if you prefer a different location.
 3. **Convert the raw spreadsheet**  
    ```bash
    uv run python -m toy_translator.convert_dataset \
      --input data/source.xlsx \
-     --output data/source.json
+     --output tmp/source.json
    ```
 
 ## Generate Gemini Output
@@ -25,8 +26,8 @@ Use the converted JSON to request character and dialogue structure from Gemini 2
 
 ```bash
 uv run python -m toy_translator.process_gemini \
-  --input data/source.json \
-  --output data/gemini_output.json \
+  --input tmp/source.json \
+  --output tmp/gemini_output.json \
   --model gemini-2.5-flash
 ```
 
@@ -37,8 +38,18 @@ Build a speaker-centric view that merges metadata and dialogue lines. Multiple s
 
 ```bash
 uv run python -m toy_translator.aggregate_speakers \
-  --input data/gemini_output.json \
-  --output data/speakers.json
+  --input tmp/gemini_output.json \
+  --output tmp/speakers.json
+```
+
+## Generate Translation Personas
+Create per-speaker persona briefs that summarise voice, background, and translation guidance. These artefacts are derived from the aggregated speaker data.
+
+```bash
+uv run python -m toy_translator.generate_personas \
+  --input tmp/speakers.json \
+  --output tmp/personas.json \
+  --model gemini-2.5-flash
 ```
 
 ## Environment Variables
