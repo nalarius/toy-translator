@@ -20,3 +20,4 @@ Document secrets and API keys in `.env.example`, and load them at runtime via `d
 
 ## Collaboration Workflow
 Before writing code, investigate the problem, sketch the design, and review both with the maintainer; do not start implementation until explicit approval is given. After receiving an implementation directive, restate this guideline to confirm alignment, then proceed with the requested task.
+Only create commits when explicitly instructed; never commit changes on your own initiative.
