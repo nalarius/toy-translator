@@ -63,6 +63,23 @@ uv run python -m toy_translator.attach_personas \
   --output-dir tmp/sessions
 ```
 
+## Translate Sessions
+Feed an individual session package to Gemini for localisation. The translator preserves KEY values,
+uses persona English names for speakers, and keeps placeholders (e.g., {NICK}, [2561e7], `\n`).
+
+```bash
+uv run python -m toy_translator.translate_session \
+  --input tmp/sessions/STORY_ROMA_34.json \
+  --output tmp/translated/STORY_ROMA_34.json \
+  --model gemini-2.5-flash
+
+# Translate every session in a directory
+uv run python -m toy_translator.translate_session \
+  --input tmp/sessions \
+  --output-dir tmp/translated \
+  --model gemini-2.5-flash
+```
+
 ## Environment Variables
 - `GEMINI_API_KEY` *(required)*: API key for the Gemini model. Keep it in `.env` (which is git-ignored) and never commit personal keys.
 
