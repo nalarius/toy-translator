@@ -80,6 +80,18 @@ uv run python -m toy_translator.translate_session \
   --model gemini-2.5-flash
 ```
 
+## Merge Into Dataset
+Combine the translated lines and persona-derived names back into the source JSON/XLSX.
+
+```bash
+uv run python -m toy_translator.merge_translations \
+  --dataset tmp/source.json \
+  --personas tmp/personas.json \
+  --translations-dir tmp/translated \
+  --output-json tmp/source_translated.json \
+  --output-xlsx tmp/source_translated.xlsx
+```
+
 ## Environment Variables
 - `GEMINI_API_KEY` *(required)*: API key for the Gemini model. Keep it in `.env` (which is git-ignored) and never commit personal keys.
 
