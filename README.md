@@ -90,6 +90,16 @@ uv run python -m toy_translator.merge_translations \
   --translations-dir tmp/translated \
   --output-json tmp/source_translated.json \
   --output-xlsx tmp/source_translated.xlsx
+
+## Full Pipeline Runner
+Run every step automatically (with optional flags for dry runs, skipping stages, or resuming):
+
+```bash
+python toy-translator.py
+
+# Example with options
+python toy-translator.py --show-commands --max-utterances 40
+```
 ```
 
 ## Environment Variables
