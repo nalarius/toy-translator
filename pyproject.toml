@@ -2,4 +2,8 @@
 name = "toy-translator"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "google-generativeai>=0.8.5",
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.2.1",
+]
