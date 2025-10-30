@@ -1,4 +1,7 @@
 # Byte-compiled / optimized / DLL files
+.env
+google-credential.json
+tmp/
 __pycache__/
 *.py[codz]
 *$py.class
