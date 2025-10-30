@@ -52,6 +52,17 @@ uv run python -m toy_translator.generate_personas \
   --model gemini-2.5-flash
 ```
 
+## Export Session Packages
+Produce per-session JSON bundles that retain the original dialogue while attaching the relevant
+character personas. Each file in `tmp/sessions/` is intended for downstream translation work.
+
+```bash
+uv run python -m toy_translator.attach_personas \
+  --gemini-output tmp/gemini_output.json \
+  --personas tmp/personas.json \
+  --output-dir tmp/sessions
+```
+
 ## Environment Variables
 - `GEMINI_API_KEY` *(required)*: API key for the Gemini model. Keep it in `.env` (which is git-ignored) and never commit personal keys.
 

@@ -70,6 +70,75 @@ def configure_gemini(model_name: str) -> genai.GenerativeModel:
     return genai.GenerativeModel(model_name)
 
 
+PLAYER_NAMES = {"유저", "플레이어", "player"}
+
+
+def is_player_speaker(name: str) -> bool:
+    if not name:
+        return False
+    return name.strip().lower() in PLAYER_NAMES
+
+
+def build_player_persona(speaker: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+    key_value = metadata.get("KEY") or "UNKNOWN"
+    return {
+        "speaker": speaker,
+        "english_name": "Player",
+        "KEY": key_value,
+        "persona": {
+            "gender": "neutral",
+            "age_range": "flexible (reader/player self-insert)",
+            "occupation": "player-controlled protagonist",
+            "speech_style": (
+                "Neutral and adaptable. Keep the tone friendly and accessible, "
+                "avoiding strong regional or gendered quirks. Mirror the tone of other "
+                "characters while remaining clear and natural."
+            ),
+            "personality": (
+                "Acts as the audience surrogate. Curious, supportive, and reactive to events "
+                "around them without overwhelming personal traits."
+            ),
+            "relationships": (
+                "Interacts with party members and NPCs across the story. Maintain flexible "
+                "second-person or first-person context as required by translation style."
+            ),
+            "translation_notes": (
+                "Always translate as 'Player'. Keep language neutral so any reader can identify "
+                "with the character. Avoid gendered or age-specific cues unless explicitly "
+                "provided in context."
+            ),
+        },
+    }
+
+
+def is_ascii_name(value: str | None) -> bool:
+    if not value:
+        return False
+    return all(ord(ch) < 128 for ch in value)
+
+
+def collect_english_candidates(speaker: str, metadata: Dict[str, Any]) -> list[str]:
+    candidates: list[str] = []
+    primary = metadata.get("english_name")
+    if isinstance(primary, str) and primary.strip():
+        candidates.append(primary.strip())
+
+    if is_ascii_name(speaker):
+        candidates.append(speaker)
+
+    char_name = metadata.get("character_name")
+    if isinstance(char_name, str) and is_ascii_name(char_name):
+        candidates.append(char_name)
+
+    aliases = metadata.get("aliases") or []
+    if isinstance(aliases, list):
+        for alias in aliases:
+            if isinstance(alias, str) and is_ascii_name(alias):
+                candidates.append(alias.strip())
+
+    return list(dict.fromkeys(candidates))
+
+
 def build_prompt(
     speaker: str,
     metadata: Dict[str, Any],
@@ -84,9 +153,12 @@ def build_prompt(
         if isinstance(value, list):
             value = ", ".join(str(item) for item in value if item)
         description_parts.append(f"{field}: {value}")
+    english_hints = collect_english_candidates(speaker, metadata)
     metadata_block = "\n".join(description_parts) if description_parts else "N/A"
 
     dialogue_preview = "\n".join(f"- {line}" for line in utterances) or "No dialogue samples."
+
+    english_hint_block = ", ".join(english_hints) if english_hints else "None provided"
 
     instructions = f"""
 You are generating a translation persona guide for localisation. Use the metadata and dialogue
@@ -94,6 +166,7 @@ to infer details that help translators stay consistent with character voice. The
 valid JSON matching this schema exactly (no additional keys, no markdown fences):
 {{
   "speaker": "{{speaker name}}",
+  "english_name": "{{English/Romanised name}}",
   "KEY": "{{character KEY}}",
   "persona": {{
     "gender": "string (inferred or 'unknown')",
@@ -108,6 +181,8 @@ valid JSON matching this schema exactly (no additional keys, no markdown fences)
 
 Rules:
 - Preserve the provided speaker name and KEY values exactly.
+- english_name must always be present. If the name is already in English (ASCII) use it; otherwise
+  infer a practical Romanised form. Prefer available candidates: {english_hint_block}.
 - When information is missing, infer from dialogue; if truly unknown, write "unknown".
 - Highlight speech quirks, catchphrases, or mood cues useful for translators.
 
@@ -140,6 +215,15 @@ def save_personas(path: Path, personas: List[Dict[str, Any]]) -> None:
     path.write_text(json.dumps(personas, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def fallback_english_name(speaker: str, metadata: Dict[str, Any]) -> str:
+    candidates = collect_english_candidates(speaker, metadata)
+    if candidates:
+        return candidates[0]
+    if is_ascii_name(speaker):
+        return speaker
+    return speaker
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -155,6 +239,12 @@ def main() -> None:
         utterances = entry.get("utterances") or []
 
         print(f"[{index}/{total}] Generating persona for '{speaker_name}'...")
+
+        if is_player_speaker(speaker_name):
+            persona_payload = build_player_persona(speaker_name, metadata)
+            personas.append(persona_payload)
+            print("  -> Applied predefined Player persona.")
+            continue
 
         max_utts = args.max_utterances
         if max_utts > 0:
@@ -187,6 +277,10 @@ def main() -> None:
                 f"Raw output saved to {dump_path}"
             ) from exc
 
+        english_name = persona_payload.get("english_name")
+        if not isinstance(english_name, str) or not english_name.strip():
+            persona_payload["english_name"] = fallback_english_name(speaker_name, metadata)
+
         personas.append(persona_payload)
 
     save_personas(args.output, personas)
@@ -195,4 +289,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
