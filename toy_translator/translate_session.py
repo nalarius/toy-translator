@@ -6,7 +6,10 @@ import argparse
 import json
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List
 
 import google.generativeai as genai
@@ -56,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("tmp/column_schema.json"),
         help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        help="Maximum number of concurrent translation threads (default: 5).",
     )
     return parser
 
@@ -289,34 +298,79 @@ def translate_file(
     output_path: Path,
     model: genai.GenerativeModel,
     temperature: float,
-    unique_key: str = "KEY"
+    unique_key: str = "KEY",
+    print_lock: Lock = None
 ) -> None:
+    """
+    Translate a single session file with retry logic.
+
+    Args:
+        input_path: Path to input session file
+        output_path: Path to output translated file
+        model: Gemini model
+        temperature: Temperature for generation
+        unique_key: Unique identifier field name
+        print_lock: Thread lock for synchronized printing
+    """
+    def safe_print(msg: str):
+        """Thread-safe print."""
+        if print_lock:
+            with print_lock:
+                print(msg, flush=True)
+        else:
+            print(msg, flush=True)
+
     session_data = load_session(input_path)
     characters = session_data["characters"]
     session = session_data["session"]
+    session_id = session.get('session_id', input_path.stem)
     character_index = build_characters_index(characters)
 
     prompt = build_prompt(session_data, unique_key)
 
-    print(f"Translating session '{session.get('session_id', input_path.stem)}'...")
+    safe_print(f"[{session_id}] Starting translation ({len(session.get('turns', []))} turns)...")
 
-    response = model.generate_content(
-        prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=temperature,
-            response_mime_type="application/json",
-        ),
-    )
+    # Retry logic with exponential backoff
+    max_retries = 3
+    response = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            safe_print(f"[{session_id}] Calling Gemini API (attempt {attempt}/{max_retries})...")
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    response_mime_type="application/json",
+                ),
+            )
+            safe_print(f"[{session_id}] ✓ API call succeeded")
+            break  # Success
+
+        except Exception as exc:
+            safe_print(f"[{session_id}] ✗ API call failed: {type(exc).__name__}: {exc}")
+
+            if attempt < max_retries:
+                wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
+                safe_print(f"[{session_id}] Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                safe_print(f"[{session_id}] ✗ All {max_retries} attempts failed.")
+                raise
 
     if not response or not response.text:
-        raise RuntimeError("Gemini returned an empty response.")
+        raise RuntimeError(f"[{session_id}] Gemini returned an empty response.")
 
     raw_text = response.text.strip()
+
     try:
+        safe_print(f"[{session_id}] Parsing JSON response...")
         translated_session = extract_json(raw_text)
+        safe_print(f"[{session_id}] ✓ JSON parsed successfully")
     except json.JSONDecodeError as exc:
         dump_path = Path("tmp") / f"gemini_translation_raw_{input_path.stem}.json"
         dump_path.write_text(raw_text, encoding="utf-8")
+        safe_print(f"[{session_id}] ✗ JSON parsing failed: {exc}")
         raise ValueError(
             f"Gemini response is not valid JSON. Raw output saved to {dump_path}"
         ) from exc
@@ -330,7 +384,7 @@ def translate_file(
         encoding="utf-8",
     )
 
-    print(f"  -> Wrote {output_path}")
+    safe_print(f"[{session_id}] ✓ Translation complete → {output_path}")
 
 
 def main() -> None:
@@ -349,15 +403,69 @@ def main() -> None:
         session_files = sorted(p for p in input_path.glob("*.json") if p.is_file())
         if not session_files:
             raise ValueError(f"No session JSON files found in directory: {input_path}")
-        print(f"Found {len(session_files)} session files in {input_path}")
-        for path in session_files:
-            output_path = determine_output_path(path, None, args.output_dir)
-            translate_file(path, output_path, model, args.temperature, args.unique_key)
-        print("All sessions translated.")
+
+        total = len(session_files)
+        print(f"\n{'='*60}")
+        print(f"Found {total} session files in {input_path}")
+        print(f"Using {args.max_workers} concurrent workers")
+        print(f"{'='*60}\n")
+
+        # Thread-safe print lock
+        print_lock = Lock()
+
+        # Track progress
+        completed = 0
+        failed = []
+
+        # Multi-threaded translation
+        with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+            # Submit all tasks
+            future_to_path = {}
+            for path in session_files:
+                output_path = determine_output_path(path, None, args.output_dir)
+                future = executor.submit(
+                    translate_file,
+                    path,
+                    output_path,
+                    model,
+                    args.temperature,
+                    args.unique_key,
+                    print_lock
+                )
+                future_to_path[future] = path
+
+            # Process completed tasks
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                try:
+                    future.result()  # Raises exception if task failed
+                    completed += 1
+                    with print_lock:
+                        print(f"\n{'='*60}")
+                        print(f"Progress: {completed}/{total} sessions completed")
+                        print(f"{'='*60}\n", flush=True)
+                except Exception as exc:
+                    failed.append((path.stem, exc))
+                    with print_lock:
+                        print(f"\n✗ Failed to translate {path.stem}: {exc}\n", flush=True)
+
+        # Final summary
+        print(f"\n{'='*60}")
+        print(f"Translation Summary:")
+        print(f"  Total: {total}")
+        print(f"  Completed: {completed}")
+        print(f"  Failed: {len(failed)}")
+        if failed:
+            print(f"\nFailed sessions:")
+            for session_id, exc in failed:
+                print(f"  - {session_id}: {exc}")
+        print(f"{'='*60}\n")
+
     else:
+        # Single file mode
         output_path = determine_output_path(input_path, args.output, args.output_dir)
         translate_file(input_path, output_path, model, args.temperature, args.unique_key)
-        print(f"Translation complete for {input_path}.")
+        print(f"\nTranslation complete for {input_path}.")
 
 
 if __name__ == "__main__":

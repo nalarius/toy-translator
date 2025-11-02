@@ -82,13 +82,28 @@ def save_json(path: Path, data: Any) -> None:
     LOGGER.info(f"Wrote {path}")
 
 
-def save_sessions(sessions_dir: Path, sessions: dict[str, list[dict[str, Any]]]) -> None:
-    """Save sessions as individual JSON files."""
+def save_sessions(
+    sessions_dir: Path,
+    sessions: dict[str, list[dict[str, Any]]],
+    schema: dict[str, Any]
+) -> None:
+    """
+    Save sessions as individual JSON files in standardized format.
+
+    Converts raw session data to standard format with 'speaker' and 'utterance' fields.
+    """
     sessions_dir.mkdir(parents=True, exist_ok=True)
 
     # Clear existing session files
-    for existing_file in sessions_dir.glob("session_*.json"):
+    for existing_file in sessions_dir.glob("*.json"):
         existing_file.unlink()
+
+    # Get field mappings from schema
+    unique_key = schema.get('unique_id', 'KEY')
+    primary_text = schema.get('text_columns', {}).get('primary', 'Korean')
+
+    # Find speaker field (try common field names)
+    speaker_candidates = ['캐릭터이름', 'speaker', 'Speaker', 'character_name', 'CharacterName']
 
     # Save each session
     for session_id, turns in sessions.items():
@@ -96,9 +111,26 @@ def save_sessions(sessions_dir: Path, sessions: dict[str, list[dict[str, Any]]])
         safe_id = session_id.replace('/', '_').replace('\\', '_')
         session_file = sessions_dir / f"{safe_id}.json"
 
+        # Convert turns to standard format
+        standardized_turns = []
+        for turn in turns:
+            # Find speaker field
+            speaker = None
+            for candidate in speaker_candidates:
+                if candidate in turn:
+                    speaker = turn.get(candidate)
+                    break
+
+            standardized_turn = {
+                unique_key: turn.get(unique_key),
+                "speaker": speaker or "UNKNOWN",
+                "utterance": turn.get(primary_text, ""),
+            }
+            standardized_turns.append(standardized_turn)
+
         session_data = {
             "session_id": session_id,
-            "turns": turns,
+            "turns": standardized_turns,
         }
 
         save_json(session_file, session_data)
@@ -204,7 +236,7 @@ def main() -> None:
 
     # Save sessions
     sessions = grouping_result['sessions']
-    save_sessions(args.sessions_dir, sessions)
+    save_sessions(args.sessions_dir, sessions, schema)
 
     # Final summary
     print("\n" + "=" * 70)

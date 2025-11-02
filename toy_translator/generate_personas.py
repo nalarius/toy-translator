@@ -6,7 +6,10 @@ import argparse
 import json
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Lock
 from typing import Any, Dict, List
 
 import google.generativeai as genai
@@ -59,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("tmp/column_schema.json"),
         help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
+    parser.add_argument(
+        "--max-workers",
+        type=int,
+        default=5,
+        help="Maximum number of concurrent persona generation threads (default: 5).",
     )
     return parser
 
@@ -247,6 +256,109 @@ def fallback_english_name(speaker: str, metadata: Dict[str, Any]) -> str:
     return speaker
 
 
+def generate_single_persona(
+    entry: Dict[str, Any],
+    model: genai.GenerativeModel,
+    args: Any,
+    print_lock: Lock = None
+) -> Dict[str, Any] | None:
+    """
+    Generate persona for a single speaker with retry logic.
+
+    Args:
+        entry: Speaker entry with speaker name, metadata, utterances
+        model: Gemini model
+        args: Command-line arguments
+        print_lock: Thread lock for synchronized printing
+
+    Returns:
+        Persona payload or None if failed/skipped
+    """
+    def safe_print(msg: str):
+        """Thread-safe print."""
+        if print_lock:
+            with print_lock:
+                print(msg, flush=True)
+        else:
+            print(msg, flush=True)
+
+    speaker_name = entry.get("speaker") or "UNKNOWN"
+    metadata = entry.get("metadata") or {}
+    utterances = entry.get("utterances") or []
+
+    safe_print(f"\n[{speaker_name}] Starting persona generation...")
+    safe_print(f"[{speaker_name}] Utterances: {len(utterances)}")
+
+    if is_player_speaker(speaker_name):
+        persona_payload = build_player_persona(speaker_name, metadata, args.unique_key)
+        safe_print(f"[{speaker_name}] ✓ Applied predefined Player persona.")
+        return persona_payload
+
+    max_utts = args.max_utterances
+    if max_utts > 0:
+        utterance_subset = utterances[:max_utts]
+        safe_print(f"[{speaker_name}] Using first {max_utts} utterances")
+    else:
+        utterance_subset = utterances
+
+    prompt = build_prompt(speaker_name, metadata, utterance_subset, args.unique_key)
+
+    # Retry logic with exponential backoff
+    max_retries = 3
+    response = None
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            safe_print(f"[{speaker_name}] Calling Gemini API (attempt {attempt}/{max_retries})...")
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(
+                    temperature=args.temperature,
+                    response_mime_type="application/json",
+                ),
+            )
+            safe_print(f"[{speaker_name}] ✓ API call succeeded")
+            break  # Success, exit retry loop
+
+        except Exception as exc:
+            safe_print(f"[{speaker_name}] ✗ API call failed: {type(exc).__name__}: {exc}")
+
+            if attempt < max_retries:
+                wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
+                safe_print(f"[{speaker_name}] Retrying in {wait_time} seconds...")
+                time.sleep(wait_time)
+            else:
+                safe_print(f"[{speaker_name}] ✗ All {max_retries} attempts failed. Skipping.")
+                return None
+
+    if not response or not response.text:
+        safe_print(f"[{speaker_name}] ! Empty response. Skipping.")
+        return None
+
+    raw_text = response.text.strip()
+
+    try:
+        safe_print(f"[{speaker_name}] Parsing JSON response...")
+        persona_payload = extract_json(raw_text)
+        safe_print(f"[{speaker_name}] ✓ JSON parsed successfully")
+    except json.JSONDecodeError as exc:
+        dump_path = Path("tmp") / f"gemini_persona_{safe_filename(speaker_name)}.json"
+        dump_path.write_text(raw_text, encoding="utf-8")
+        safe_print(f"[{speaker_name}] ✗ JSON parsing failed: {exc}")
+        raise ValueError(
+            f"Gemini response for '{speaker_name}' is not valid JSON. "
+            f"Raw output saved to {dump_path}"
+        ) from exc
+
+    english_name = persona_payload.get("english_name")
+    if not isinstance(english_name, str) or not english_name.strip():
+        persona_payload["english_name"] = fallback_english_name(speaker_name, metadata)
+        safe_print(f"[{speaker_name}] Using fallback English name: {persona_payload['english_name']}")
+
+    safe_print(f"[{speaker_name}] ✓ Persona generation complete")
+    return persona_payload
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -258,61 +370,73 @@ def main() -> None:
 
     speakers = load_speakers(args.input)
     model = configure_gemini(args.model)
-    personas: List[Dict[str, Any]] = []
 
     total = len(speakers)
-    for index, entry in enumerate(speakers, start=1):
-        speaker_name = entry.get("speaker") or "UNKNOWN"
-        metadata = entry.get("metadata") or {}
-        utterances = entry.get("utterances") or []
+    print(f"\n{'='*60}")
+    print(f"Generating personas for {total} speakers")
+    print(f"Using {args.max_workers} concurrent workers")
+    print(f"{'='*60}\n")
 
-        print(f"[{index}/{total}] Generating persona for '{speaker_name}'...")
+    # Thread-safe print lock
+    print_lock = Lock()
 
-        if is_player_speaker(speaker_name):
-            persona_payload = build_player_persona(speaker_name, metadata, args.unique_key)
-            personas.append(persona_payload)
-            print("  -> Applied predefined Player persona.")
-            continue
+    # Track progress
+    completed = 0
+    failed = []
+    personas: List[Dict[str, Any]] = []
 
-        max_utts = args.max_utterances
-        if max_utts > 0:
-            utterance_subset = utterances[:max_utts]
-        else:
-            utterance_subset = utterances
+    # Multi-threaded persona generation
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        # Submit all tasks
+        future_to_speaker = {}
+        for entry in speakers:
+            future = executor.submit(
+                generate_single_persona,
+                entry,
+                model,
+                args,
+                print_lock
+            )
+            future_to_speaker[future] = entry.get("speaker") or "UNKNOWN"
 
-        prompt = build_prompt(speaker_name, metadata, utterance_subset, args.unique_key)
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=args.temperature,
-                response_mime_type="application/json",
-            ),
-        )
+        # Process completed tasks
+        for future in as_completed(future_to_speaker):
+            speaker_name = future_to_speaker[future]
+            try:
+                persona = future.result()  # Raises exception if task failed
+                if persona:
+                    personas.append(persona)
+                    completed += 1
+                    with print_lock:
+                        print(f"\n{'='*60}")
+                        print(f"Progress: {completed}/{total} personas completed")
+                        print(f"{'='*60}\n", flush=True)
+                else:
+                    # Skipped (e.g., API failure after retries)
+                    failed.append(speaker_name)
+                    with print_lock:
+                        print(f"\n✗ Skipped {speaker_name}\n", flush=True)
 
-        if not response or not response.text:
-            print(f"  ! Empty response for speaker '{speaker_name}'. Skipping.")
-            continue
+            except Exception as exc:
+                failed.append(speaker_name)
+                with print_lock:
+                    print(f"\n✗ Failed to generate persona for {speaker_name}: {exc}\n", flush=True)
 
-        raw_text = response.text.strip()
-
-        try:
-            persona_payload = extract_json(raw_text)
-        except json.JSONDecodeError as exc:
-            dump_path = Path("tmp") / f"gemini_persona_{safe_filename(speaker_name)}.json"
-            dump_path.write_text(raw_text, encoding="utf-8")
-            raise ValueError(
-                f"Gemini response for '{speaker_name}' is not valid JSON. "
-                f"Raw output saved to {dump_path}"
-            ) from exc
-
-        english_name = persona_payload.get("english_name")
-        if not isinstance(english_name, str) or not english_name.strip():
-            persona_payload["english_name"] = fallback_english_name(speaker_name, metadata)
-
-        personas.append(persona_payload)
-
+    # Save personas
     save_personas(args.output, personas)
-    print(f"Persona generation complete. Output written to {args.output}")
+
+    # Final summary
+    print(f"\n{'='*60}")
+    print(f"Persona Generation Summary:")
+    print(f"  Total speakers: {total}")
+    print(f"  Completed: {completed}")
+    print(f"  Failed/Skipped: {len(failed)}")
+    if failed:
+        print(f"\nFailed/Skipped speakers:")
+        for speaker in failed:
+            print(f"  - {speaker}")
+    print(f"  Output: {args.output}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
