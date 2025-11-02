@@ -28,6 +28,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("tmp/speakers.json"),
         help="Where to write the aggregated speaker JSON (default: tmp/speakers.json).",
     )
+    parser.add_argument(
+        "--unique-key",
+        default="KEY",
+        help="Name of the unique identifier column (default: KEY).",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=Path("tmp/column_schema.json"),
+        help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
     return parser
 
 
@@ -40,6 +51,17 @@ def load_gemini_output(path: Path) -> dict[str, Any]:
     if "characters" not in payload or "sessions" not in payload:
         raise ValueError("Gemini output must contain 'characters' and 'sessions' keys.")
     return payload
+
+
+def load_schema(schema_path: Path) -> dict[str, Any] | None:
+    """Load column schema from JSON file if it exists."""
+    if not schema_path.exists():
+        return None
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        return schema
+    except Exception:
+        return None
 
 
 def normalise_label(value: Any) -> str:
@@ -72,13 +94,14 @@ def dedupe_preserve_order(items: List[str]) -> List[str]:
 
 
 def build_character_indexes(
-    characters: List[Dict[str, Any]]
+    characters: List[Dict[str, Any]],
+    unique_key: str = "KEY"
 ) -> tuple[dict[str, Dict[str, Dict[str, Any]]], dict[str, Dict[str, Any]]]:
     by_key: dict[str, Dict[str, Dict[str, Any]]] = {}
     by_name: dict[str, Dict[str, Any]] = {}
 
     for character in characters:
-        key = normalise_label(character.get("KEY"))
+        key = normalise_label(character.get(unique_key))
         name_tokens = dedupe_preserve_order(split_labels(character.get("character_name")))
 
         alias_tokens: List[str] = []
@@ -124,11 +147,11 @@ def merge_metadata(dest: Dict[str, Any], source: Dict[str, Any]) -> None:
             dest[key] = deepcopy(value)
 
 
-def aggregate_speakers(payload: dict[str, Any]) -> list[dict[str, Any]]:
+def aggregate_speakers(payload: dict[str, Any], unique_key: str = "KEY") -> list[dict[str, Any]]:
     characters = payload.get("characters", [])
     sessions = payload.get("sessions", [])
 
-    by_key, by_name = build_character_indexes(characters)
+    by_key, by_name = build_character_indexes(characters, unique_key)
 
     speakers: dict[str, dict[str, Any]] = {}
 
@@ -142,7 +165,7 @@ def aggregate_speakers(payload: dict[str, Any]) -> list[dict[str, Any]]:
             speaker_field = normalise_label(turn.get("speaker"))
             speaker_names = dedupe_preserve_order(split_labels(speaker_field)) or ["UNKNOWN"]
             utterance = normalise_label(turn.get("utterance"))
-            key = normalise_label(turn.get("KEY"))
+            key = normalise_label(turn.get(unique_key))
 
             for speaker_name in speaker_names:
                 entry = speakers.setdefault(
@@ -179,8 +202,13 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Load schema if exists and override args
+    schema = load_schema(args.schema)
+    if schema:
+        args.unique_key = schema.get("unique_id", args.unique_key)
+
     payload = load_gemini_output(args.input)
-    aggregated = aggregate_speakers(payload)
+    aggregated = aggregate_speakers(payload, args.unique_key)
     save_output(args.output, aggregated)
 
 

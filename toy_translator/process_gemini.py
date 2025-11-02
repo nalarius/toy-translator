@@ -43,6 +43,22 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.2,
         help="Sampling temperature when generating responses (default: 0.2).",
     )
+    parser.add_argument(
+        "--unique-key",
+        default="KEY",
+        help="Name of the unique identifier column (default: KEY).",
+    )
+    parser.add_argument(
+        "--text-column",
+        default="Korean",
+        help="Name of the primary text column to translate (default: Korean).",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=Path("tmp/column_schema.json"),
+        help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
     return parser
 
 
@@ -55,6 +71,18 @@ def load_dataset(path: Path) -> list[dict[str, Any]]:
     return data
 
 
+def load_schema(schema_path: Path) -> dict[str, Any] | None:
+    """Load column schema from JSON file if it exists."""
+    if not schema_path.exists():
+        return None
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        return schema
+    except Exception as exc:
+        LOGGER.warning(f"Failed to load schema from {schema_path}: {exc}")
+        return None
+
+
 def configure_gemini(model_name: str) -> genai.GenerativeModel:
     load_dotenv()
     api_key = os.getenv("GEMINI_API_KEY")
@@ -64,31 +92,31 @@ def configure_gemini(model_name: str) -> genai.GenerativeModel:
     return genai.GenerativeModel(model_name)
 
 
-def build_prompt(dataset: list[dict[str, Any]]) -> str:
+def build_prompt(dataset: list[dict[str, Any]], unique_key: str, text_column: str) -> str:
     sample = json.dumps(dataset, ensure_ascii=False, indent=2)
-    instructions = """
-You are an assistant that processes translation dataset entries. Each entry contains at least the fields "KEY" and "Korean". Some rows also include speaker or context metadata.
+    instructions = f"""
+You are an assistant that processes translation dataset entries. Each entry contains at least the fields "{unique_key}" and "{text_column}". Some rows also include speaker or context metadata.
 
 From the provided JSON array, extract two artefacts:
 1. "characters": a list of character metadata entries. Include only rows that represent characters (e.g., NPC descriptions). Each item must contain:
-   - "KEY": original KEY (string)
+   - "{unique_key}": original {unique_key} (string)
    - "character_name": the primary name (string)
    - Optional supporting fields that appear in the source (e.g., "speaker_gender", "description", "aliases").
    Omit empty or unknown values.
 2. "sessions": a list of dialogue sessions. A session groups all conversational turns that belong together. Each session must look like:
-   {
-     "session_id": a human-readable identifier (string, may be derived from KEY prefixes),
+   {{
+     "session_id": a human-readable identifier (string, may be derived from {unique_key} prefixes),
      "turns": [
-        {"KEY": original KEY (string), "speaker": speaker name or role (string), "utterance": Korean dialogue (string)}
+        {{"{unique_key}": original {unique_key} (string), "speaker": speaker name or role (string), "utterance": {text_column} dialogue (string)}}
      ]
-   }
-   Keep every KEY from the original dataset that represents an utterance. Preserve the order of turns as they appear in the source.
+   }}
+   Keep every {unique_key} from the original dataset that represents an utterance. Preserve the order of turns as they appear in the source.
 
 Return a JSON object *only* in the following format:
-{
+{{
   "characters": [...],
   "sessions": [...]
-}
+}}
 
 Do not include markdown fences, commentary, or additional text—just valid JSON.
 """
@@ -126,11 +154,24 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
+
+    # Load schema if exists and override args
+    schema = load_schema(args.schema)
+    if schema:
+        args.unique_key = schema.get("unique_id", args.unique_key)
+        text_cols = schema.get("text_columns", {})
+        args.text_column = text_cols.get("primary", args.text_column)
+        LOGGER.info("Loaded schema from %s", args.schema)
+        LOGGER.info("Using unique_key='%s', text_column='%s'", args.unique_key, args.text_column)
+    else:
+        LOGGER.info("No schema found, using defaults: unique_key='%s', text_column='%s'",
+                    args.unique_key, args.text_column)
+
     LOGGER.info("Loading dataset from %s", args.input)
     dataset = load_dataset(args.input)
 
     model = configure_gemini(args.model)
-    prompt = build_prompt(dataset)
+    prompt = build_prompt(dataset, args.unique_key, args.text_column)
     LOGGER.info("Requesting structured data from Gemini (%s)", args.model)
     raw_response = call_gemini(model, prompt, args.temperature)
 

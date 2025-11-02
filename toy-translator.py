@@ -70,19 +70,26 @@ def step(label: str, *command: str) -> tuple[str, List[str]]:
 
 def build_steps(args: argparse.Namespace) -> List[tuple[str, List[str]]]:
     max_utts = str(args.max_utterances)
+    schema_path = "tmp/column_schema.json"
+
     commands: List[tuple[str, List[str]]] = [
-        step("Convert XLSX to JSON", sys.executable, "-m", "toy_translator.convert_dataset"),
+        step("Convert XLSX to JSON and classify columns",
+             sys.executable, "-m", "toy_translator.convert_dataset"),
         step(
             "Extract sessions via Gemini",
             sys.executable,
             "-m",
             "toy_translator.process_gemini",
+            "--schema",
+            schema_path,
         ),
         step(
             "Aggregate speakers",
             sys.executable,
             "-m",
             "toy_translator.aggregate_speakers",
+            "--schema",
+            schema_path,
         ),
         step(
             "Generate personas",
@@ -91,6 +98,8 @@ def build_steps(args: argparse.Namespace) -> List[tuple[str, List[str]]]:
             "toy_translator.generate_personas",
             "--max-utterances",
             max_utts,
+            "--schema",
+            schema_path,
         ),
         step(
             "Attach personas to sessions",
@@ -109,6 +118,8 @@ def build_steps(args: argparse.Namespace) -> List[tuple[str, List[str]]]:
                 "toy_translator.translate_session",
                 "--input",
                 "tmp/sessions",
+                "--schema",
+                schema_path,
             )
         )
 
@@ -119,6 +130,8 @@ def build_steps(args: argparse.Namespace) -> List[tuple[str, List[str]]]:
                 sys.executable,
                 "-m",
                 "toy_translator.merge_translations",
+                "--schema",
+                schema_path,
             )
         )
 

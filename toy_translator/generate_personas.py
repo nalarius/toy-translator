@@ -49,6 +49,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Limit the number of utterances passed to Gemini (0 means all).",
     )
+    parser.add_argument(
+        "--unique-key",
+        default="KEY",
+        help="Name of the unique identifier column (default: KEY).",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=Path("tmp/column_schema.json"),
+        help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
     return parser
 
 
@@ -59,6 +70,17 @@ def load_speakers(path: Path) -> List[Dict[str, Any]]:
     if not isinstance(data, list):
         raise ValueError("Speakers payload must be a JSON array.")
     return data
+
+
+def load_schema(schema_path: Path) -> dict[str, Any] | None:
+    """Load column schema from JSON file if it exists."""
+    if not schema_path.exists():
+        return None
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        return schema
+    except Exception:
+        return None
 
 
 def configure_gemini(model_name: str) -> genai.GenerativeModel:
@@ -79,12 +101,12 @@ def is_player_speaker(name: str) -> bool:
     return name.strip().lower() in PLAYER_NAMES
 
 
-def build_player_persona(speaker: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-    key_value = metadata.get("KEY") or "UNKNOWN"
+def build_player_persona(speaker: str, metadata: Dict[str, Any], unique_key: str = "KEY") -> Dict[str, Any]:
+    key_value = metadata.get(unique_key) or "UNKNOWN"
     return {
         "speaker": speaker,
         "english_name": "Player",
-        "KEY": key_value,
+        unique_key: key_value,
         "persona": {
             "gender": "neutral",
             "age_range": "flexible (reader/player self-insert)",
@@ -143,8 +165,9 @@ def build_prompt(
     speaker: str,
     metadata: Dict[str, Any],
     utterances: List[str],
+    unique_key: str = "KEY"
 ) -> str:
-    key_value = metadata.get("KEY") or "UNKNOWN"
+    key_value = metadata.get(unique_key) or "UNKNOWN"
     description_parts = []
     for field in ("character_name", "speaker_gender", "description", "aliases"):
         value = metadata.get(field)
@@ -167,7 +190,7 @@ valid JSON matching this schema exactly (no additional keys, no markdown fences)
 {{
   "speaker": "{{speaker name}}",
   "english_name": "{{English/Romanised name}}",
-  "KEY": "{{character KEY}}",
+  "{unique_key}": "{{character {unique_key}}}",
   "persona": {{
     "gender": "string (inferred or 'unknown')",
     "age_range": "string",
@@ -180,14 +203,14 @@ valid JSON matching this schema exactly (no additional keys, no markdown fences)
 }}
 
 Rules:
-- Preserve the provided speaker name and KEY values exactly.
+- Preserve the provided speaker name and {unique_key} values exactly.
 - english_name must always be present. If the name is already in English (ASCII) use it; otherwise
   infer a practical Romanised form. Prefer available candidates: {english_hint_block}.
 - When information is missing, infer from dialogue; if truly unknown, write "unknown".
 - Highlight speech quirks, catchphrases, or mood cues useful for translators.
 
 Speaker: {speaker}
-KEY: {key_value}
+{unique_key}: {key_value}
 Metadata:
 {metadata_block}
 
@@ -228,6 +251,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Load schema if exists and override args
+    schema = load_schema(args.schema)
+    if schema:
+        args.unique_key = schema.get("unique_id", args.unique_key)
+
     speakers = load_speakers(args.input)
     model = configure_gemini(args.model)
     personas: List[Dict[str, Any]] = []
@@ -241,7 +269,7 @@ def main() -> None:
         print(f"[{index}/{total}] Generating persona for '{speaker_name}'...")
 
         if is_player_speaker(speaker_name):
-            persona_payload = build_player_persona(speaker_name, metadata)
+            persona_payload = build_player_persona(speaker_name, metadata, args.unique_key)
             personas.append(persona_payload)
             print("  -> Applied predefined Player persona.")
             continue
@@ -252,7 +280,7 @@ def main() -> None:
         else:
             utterance_subset = utterances
 
-        prompt = build_prompt(speaker_name, metadata, utterance_subset)
+        prompt = build_prompt(speaker_name, metadata, utterance_subset, args.unique_key)
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(

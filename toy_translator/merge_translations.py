@@ -44,6 +44,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=Path("tmp/source_translated.xlsx"),
         help="Where to write the merged XLSX (default: tmp/source_translated.xlsx).",
     )
+    parser.add_argument(
+        "--unique-key",
+        default="KEY",
+        help="Name of the unique identifier column (default: KEY).",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=Path("tmp/column_schema.json"),
+        help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
+    )
     return parser
 
 
@@ -53,10 +64,21 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def build_persona_map(personas: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+def load_schema(schema_path: Path) -> dict[str, Any] | None:
+    """Load column schema from JSON file if it exists."""
+    if not schema_path.exists():
+        return None
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        return schema
+    except Exception:
+        return None
+
+
+def build_persona_map(personas: List[Dict[str, Any]], unique_key: str = "KEY") -> Dict[str, List[str]]:
     mapping: Dict[str, List[str]] = {}
     for entry in personas:
-        key_value = entry.get("KEY")
+        key_value = entry.get(unique_key)
         english_name = entry.get("english_name")
         if not isinstance(key_value, str) or key_value in ("", "UNKNOWN"):
             continue
@@ -68,7 +90,7 @@ def build_persona_map(personas: List[Dict[str, Any]]) -> Dict[str, List[str]]:
     return mapping
 
 
-def build_translation_map(translated_dir: Path) -> Dict[str, str]:
+def build_translation_map(translated_dir: Path, unique_key: str = "KEY") -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     if not translated_dir.exists():
         raise FileNotFoundError(f"Translations directory not found: {translated_dir}")
@@ -78,7 +100,7 @@ def build_translation_map(translated_dir: Path) -> Dict[str, str]:
         session = data.get("session", {})
         turns = session.get("turns", [])
         for turn in turns:
-            key_value = turn.get("KEY")
+            key_value = turn.get(unique_key)
             english_line = turn.get("english_utterance")
             if (
                 isinstance(key_value, str)
@@ -120,6 +142,11 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
 
+    # Load schema if exists and override args
+    schema = load_schema(args.schema)
+    if schema:
+        args.unique_key = schema.get("unique_id", args.unique_key)
+
     dataset = load_json(args.dataset)
     if not isinstance(dataset, list):
         raise ValueError("Dataset must be a JSON array.")
@@ -128,15 +155,15 @@ def main() -> None:
     if not isinstance(personas, list):
         raise ValueError("Personas payload must be a list.")
 
-    persona_map = build_persona_map(personas)
-    translation_map = build_translation_map(args.translations_dir)
+    persona_map = build_persona_map(personas, args.unique_key)
+    translation_map = build_translation_map(args.translations_dir, args.unique_key)
 
     merged_rows: List[Dict[str, Any]] = []
     for row in dataset:
         if not isinstance(row, dict):
             continue
         new_row = dict(row)
-        key_value = row.get("KEY")
+        key_value = row.get(args.unique_key)
         english_value = ""
 
         if isinstance(key_value, str) and key_value:
