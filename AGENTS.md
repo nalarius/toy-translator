@@ -4,7 +4,12 @@
 Place all runtime code directly under `toy_translator/` at the repository root—skip an intermediate `src/` layer. Keep core translation logic in focused modules (for example `toy_translator/phrasebook.py` or `toy_translator/pipelines.py`), park CLI helpers in `toy_translator/cli.py`, and share constants via `toy_translator/settings.py`. Put throwaway explorations in `notes/` and small sample assets in `assets/`. Prefer lightweight modules over deep packages so navigation stays flat.
 
 ## Build, Test, and Development Commands
-Use `uv sync` to recreate the virtual environment and `uv run python toy_translator/cli.py --help` (or another short script) for manual checks. If a dependency becomes unavoidable, record it with `uv add <package>` so the minimal `pyproject.toml` stays authoritative; otherwise leave the file alone.
+**Always use `uv` for running Python commands.** Use `uv sync` to recreate the virtual environment and `uv run python -m <module>` to execute any Python script or module. For example:
+- Run the pipeline: `uv run python toy-translator.py`
+- Run a specific module: `uv run python -m toy_translator.convert_dataset`
+- Manual testing: `uv run python -c "from toy_translator.phrasebook import translate; print(translate('안녕'))"`
+
+If a dependency becomes unavoidable, record it with `uv add <package>` so the minimal `pyproject.toml` stays authoritative; otherwise leave the file alone.
 
 ## Coding Style & Naming Conventions
 Target Python 3.11+, with 4-space indentation, type hints on outward-facing functions, snake_case for functions, PascalCase for classes, and UPPER_CASE for constants. Keep modules lean (<300 lines) and split helpers when they grow large. Use whatever editor formatting you prefer, but keep imports explicit and avoid wildcard imports.
