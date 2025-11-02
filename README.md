@@ -22,12 +22,13 @@ Toy Translator is a lightweight playground for taking localisation spreadsheets,
    ```
 
 ## Generate Gemini Output
-Use the converted JSON to request character and dialogue structure from Gemini 2.5 Flash. The script saves a combined payload containing both character metadata and dialogue sessions.
+Use the converted JSON to request character and dialogue structure from Gemini 2.5 Flash. The script saves a combined payload containing both character metadata and dialogue sessions, and generates standardized session files with `speaker` and `utterance` fields.
 
 ```bash
 uv run python -m toy_translator.process_gemini \
   --input tmp/source.json \
   --output tmp/gemini_output.json \
+  --sessions-dir tmp/sessions \
   --model gemini-2.5-flash
 ```
 
@@ -43,14 +44,20 @@ uv run python -m toy_translator.aggregate_speakers \
 ```
 
 ## Generate Translation Personas
-Create per-speaker persona briefs that summarise voice, background, and translation guidance. These artefacts are derived from the aggregated speaker data.
+Create per-speaker persona briefs that summarise voice, background, and translation guidance. These artefacts are derived from the aggregated speaker data. Supports concurrent processing for faster generation.
 
 ```bash
 uv run python -m toy_translator.generate_personas \
   --input tmp/speakers.json \
   --output tmp/personas.json \
-  --model gemini-2.5-flash
+  --model gemini-2.5-flash \
+  --max-workers 5
 ```
+
+**Features:**
+- Concurrent API calls (default: 5 workers)
+- Automatic retry with exponential backoff (2, 4, 8 seconds)
+- Detailed progress output showing per-speaker status
 
 ## Export Session Packages
 Produce per-session JSON bundles that retain the original dialogue while attaching the relevant
@@ -64,21 +71,31 @@ uv run python -m toy_translator.attach_personas \
 ```
 
 ## Translate Sessions
-Feed an individual session package to Gemini for localisation. The translator preserves KEY values,
-uses persona English names for speakers, and keeps placeholders (e.g., {NICK}, [2561e7], `\n`).
+Feed an individual session package to Gemini for localisation. The translator preserves KEY values, uses persona English names for speakers, and keeps placeholders (e.g., {NICK}, [2561e7]). Translations are validated and auto-fixed before saving.
 
 ```bash
+# Translate a single session
 uv run python -m toy_translator.translate_session \
   --input tmp/sessions/STORY_ROMA_34.json \
   --output tmp/translated/STORY_ROMA_34.json \
   --model gemini-2.5-flash
 
-# Translate every session in a directory
+# Translate entire directory with concurrent processing
 uv run python -m toy_translator.translate_session \
   --input tmp/sessions \
   --output-dir tmp/translated \
-  --model gemini-2.5-flash
+  --model gemini-2.5-flash \
+  --max-workers 5
 ```
+
+**Features:**
+- Concurrent API calls (default: 5 workers)
+- Automatic retry with exponential backoff (2, 4, 8 seconds)
+- Pre-save validation and auto-fixing:
+  - Format tags (`[i]`, `[HEXCODE]`) preservation check
+  - Placeholder (`{NICK}`, `{PLAYER}`) preservation check
+  - Newline count auto-correction at sentence boundaries
+- Detailed progress and validation reports
 
 ## Merge Into Dataset
 Combine the translated lines and persona-derived names back into the source JSON/XLSX.
