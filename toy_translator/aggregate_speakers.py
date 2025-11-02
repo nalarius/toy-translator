@@ -12,15 +12,21 @@ from typing import Any, Dict, List
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Create a speaker-centric summary from Gemini output, merging dialogue turns "
+            "Create a speaker-centric summary from classified data and sessions, merging dialogue turns "
             "with character metadata when available."
         )
     )
     parser.add_argument(
-        "--input",
+        "--classified-data",
         type=Path,
-        default=Path("tmp/gemini_output.json"),
-        help="Path to the Gemini response JSON (default: tmp/gemini_output.json).",
+        default=Path("tmp/classified_data.json"),
+        help="Path to the classified data JSON (default: tmp/classified_data.json).",
+    )
+    parser.add_argument(
+        "--sessions-dir",
+        type=Path,
+        default=Path("tmp/sessions"),
+        help="Directory containing session JSON files (default: tmp/sessions).",
     )
     parser.add_argument(
         "--output",
@@ -42,15 +48,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def load_gemini_output(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        raise FileNotFoundError(f"Gemini output not found: {path}")
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
-        raise ValueError("Gemini output must be a JSON object.")
-    if "characters" not in payload or "sessions" not in payload:
-        raise ValueError("Gemini output must contain 'characters' and 'sessions' keys.")
-    return payload
+def load_classified_data_and_sessions(
+    classified_data_path: Path,
+    sessions_dir: Path
+) -> dict[str, Any]:
+    """
+    Load classified data and sessions from new architecture output.
+
+    Args:
+        classified_data_path: Path to classified_data.json
+        sessions_dir: Directory containing session JSON files
+
+    Returns:
+        Compatible payload with 'characters' and 'sessions' keys
+    """
+    # Load classified data
+    if not classified_data_path.exists():
+        raise FileNotFoundError(f"Classified data not found: {classified_data_path}")
+    classified_data = json.loads(classified_data_path.read_text(encoding="utf-8"))
+
+    # Extract character rows
+    characters = classified_data.get('rows_by_type', {}).get('character', [])
+
+    # Load all session files
+    if not sessions_dir.exists():
+        raise FileNotFoundError(f"Sessions directory not found: {sessions_dir}")
+
+    sessions = []
+    for session_file in sorted(sessions_dir.glob("*.json")):
+        session_data = json.loads(session_file.read_text(encoding="utf-8"))
+        sessions.append(session_data)
+
+    # Return compatible format
+    return {
+        'characters': characters,
+        'sessions': sessions,
+    }
 
 
 def load_schema(schema_path: Path) -> dict[str, Any] | None:
@@ -207,7 +240,7 @@ def main() -> None:
     if schema:
         args.unique_key = schema.get("unique_id", args.unique_key)
 
-    payload = load_gemini_output(args.input)
+    payload = load_classified_data_and_sessions(args.classified_data, args.sessions_dir)
     aggregated = aggregate_speakers(payload, args.unique_key)
     save_output(args.output, aggregated)
 
