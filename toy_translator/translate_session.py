@@ -281,6 +281,210 @@ def merge_sessions(
     }
 
 
+def validate_format_tags(original: str, translated: str) -> List[str]:
+    """
+    Validate that format tags match between original and translated text.
+
+    Returns list of validation errors.
+    """
+    errors = []
+
+    # Check italic tags
+    orig_i_open = original.count('[i]')
+    orig_i_close = original.count('[/i]')
+    trans_i_open = translated.count('[i]')
+    trans_i_close = translated.count('[/i]')
+
+    if orig_i_open != trans_i_open or orig_i_close != trans_i_close:
+        errors.append(f"Italic tag mismatch: original [{orig_i_open},{orig_i_close}], translated [{trans_i_open},{trans_i_close}]")
+
+    # Check color tags (format: [HEXCODE]...[- ])
+    import re
+    orig_color_open = len(re.findall(r'\[[0-9a-fA-F]{6}\]', original))
+    trans_color_open = len(re.findall(r'\[[0-9a-fA-F]{6}\]', translated))
+    orig_color_close = original.count('[-]')
+    trans_color_close = translated.count('[-]')
+
+    if orig_color_open != trans_color_open or orig_color_close != trans_color_close:
+        errors.append(f"Color tag mismatch: original [{orig_color_open},{orig_color_close}], translated [{trans_color_open},{trans_color_close}]")
+
+    return errors
+
+
+def validate_placeholders(original: str, translated: str) -> List[str]:
+    """
+    Validate that placeholders like {NICK}, {PLAYER} are preserved.
+
+    Returns list of validation errors.
+    """
+    errors = []
+
+    import re
+    # Find all placeholders like {WORD}
+    orig_placeholders = set(re.findall(r'\{[A-Z_]+\}', original))
+    trans_placeholders = set(re.findall(r'\{[A-Z_]+\}', translated))
+
+    missing = orig_placeholders - trans_placeholders
+    extra = trans_placeholders - orig_placeholders
+
+    if missing:
+        errors.append(f"Missing placeholders: {missing}")
+    if extra:
+        errors.append(f"Extra placeholders: {extra}")
+
+    return errors
+
+
+def validate_newlines(original: str, translated: str) -> List[str]:
+    """
+    Validate that newline count matches between original and translated.
+
+    Returns list of validation errors.
+    """
+    errors = []
+
+    orig_count = original.count('\n')
+    trans_count = translated.count('\n')
+
+    if orig_count != trans_count:
+        errors.append(f"Newline count mismatch: original {orig_count}, translated {trans_count}")
+
+    return errors
+
+
+def fix_newlines(original: str, translated: str) -> str:
+    """
+    Adjust newlines in translated text to match original count.
+
+    Inserts newlines at reasonable positions (sentence boundaries, after punctuation)
+    when original has more newlines, or removes excess newlines when original has fewer.
+    """
+    orig_count = original.count('\n')
+    trans_count = translated.count('\n')
+
+    if orig_count == trans_count:
+        return translated  # Already matches
+
+    if orig_count > trans_count:
+        # Need to add newlines
+        needed = orig_count - trans_count
+
+        # Find good split points: sentence endings, commas, conjunctions
+        import re
+
+        # Remove existing newlines temporarily to find split points
+        text = translated.replace('\n', ' ')
+
+        # Find potential split points (after: . ! ? , ; and conjunctions)
+        # Prefer sentence endings over commas
+        sentence_ends = [m.end() for m in re.finditer(r'[.!?]\s+', text)]
+        comma_points = [m.end() for m in re.finditer(r'[,;]\s+', text)]
+
+        # Combine and sort split points, preferring sentence ends
+        split_points = sentence_ends + comma_points
+        split_points.sort()
+
+        if len(split_points) >= needed:
+            # Choose evenly distributed points
+            step = len(split_points) / (needed + 1)
+            selected_points = [split_points[int((i + 1) * step)] for i in range(needed)]
+
+            # Insert newlines at selected points
+            result = []
+            last_pos = 0
+            for point in sorted(selected_points):
+                result.append(text[last_pos:point].rstrip())
+                last_pos = point
+            result.append(text[last_pos:])
+
+            return '\n'.join(result)
+        else:
+            # Not enough good split points, just split evenly
+            words = text.split()
+            chunk_size = max(1, len(words) // (needed + 1))
+            chunks = []
+            for i in range(0, len(words), chunk_size):
+                chunks.append(' '.join(words[i:i + chunk_size]))
+            return '\n'.join(chunks[:needed + 1])
+
+    else:
+        # Need to remove newlines
+        # Just join excess newlines with space
+        lines = translated.split('\n')
+        to_remove = trans_count - orig_count
+
+        # Keep first and last lines, merge middle ones
+        if len(lines) <= orig_count + 1:
+            return translated
+
+        # Merge consecutive lines to reduce count
+        result_lines = []
+        merge_indices = set(range(1, min(to_remove + 1, len(lines))))
+
+        for i, line in enumerate(lines):
+            if i in merge_indices and result_lines:
+                result_lines[-1] = result_lines[-1] + ' ' + line
+            else:
+                result_lines.append(line)
+
+        return '\n'.join(result_lines)
+
+    return translated
+
+
+def validate_and_fix_translation(
+    original_session: Dict[str, Any],
+    merged_payload: Dict[str, Any],
+    session_id: str
+) -> tuple[Dict[str, Any], List[str]]:
+    """
+    Validate and fix translation quality and consistency.
+
+    Auto-fixes newline mismatches. Reports other validation errors.
+
+    Returns:
+        (fixed_payload, list of validation errors)
+    """
+    all_errors = []
+    fixed_count = 0
+
+    original_turns = original_session.get("turns", [])
+    merged_turns = merged_payload.get("session", {}).get("turns", [])
+
+    if len(original_turns) != len(merged_turns):
+        all_errors.append(f"Turn count mismatch: {len(original_turns)} vs {len(merged_turns)}")
+        return merged_payload, all_errors  # Can't validate individual turns if counts don't match
+
+    for idx, (orig, merged) in enumerate(zip(original_turns, merged_turns), start=1):
+        orig_utterance = orig.get("utterance", "")
+        translated_utterance = merged.get("english_utterance", "")
+
+        turn_errors = []
+
+        # Validate format tags
+        turn_errors.extend(validate_format_tags(orig_utterance, translated_utterance))
+
+        # Validate placeholders
+        turn_errors.extend(validate_placeholders(orig_utterance, translated_utterance))
+
+        # Check and fix newlines
+        newline_errors = validate_newlines(orig_utterance, translated_utterance)
+        if newline_errors:
+            # Auto-fix newline mismatches
+            fixed_utterance = fix_newlines(orig_utterance, translated_utterance)
+            merged["english_utterance"] = fixed_utterance
+            fixed_count += 1
+            turn_errors.append(f"Newline mismatch auto-fixed ({orig_utterance.count(chr(10))} expected)")
+
+        if turn_errors:
+            all_errors.append(f"Turn {idx}: {'; '.join(turn_errors)}")
+
+    if fixed_count > 0:
+        all_errors.insert(0, f"Auto-fixed {fixed_count} newline mismatches")
+
+    return merged_payload, all_errors
+
+
 def determine_output_path(
     input_path: Path,
     output_arg: Path | None,
@@ -377,6 +581,17 @@ def translate_file(
 
     translated_session = enforce_structure(translated_session, session, character_index, unique_key)
     merged_payload = merge_sessions(characters, session, translated_session, character_index, unique_key)
+
+    # Validate and fix translation before saving
+    safe_print(f"[{session_id}] Validating translation...")
+    merged_payload, validation_errors = validate_and_fix_translation(session, merged_payload, session_id)
+
+    if validation_errors:
+        safe_print(f"[{session_id}] ℹ Validation report:")
+        for error in validation_errors:
+            safe_print(f"[{session_id}]   - {error}")
+    else:
+        safe_print(f"[{session_id}] ✓ Validation passed")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
