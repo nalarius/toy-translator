@@ -17,6 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
     parser.add_argument(
+        "--gemini-output",
+        type=Path,
+        default=None,
+        help="Path to gemini_output.json (recommended - contains both characters and sessions).",
+    )
+    parser.add_argument(
         "--classified-data",
         type=Path,
         default=Path("tmp/classified_data.json"),
@@ -46,6 +52,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to column schema JSON (auto-loads if exists, default: tmp/column_schema.json).",
     )
     return parser
+
+
+def load_gemini_output(gemini_output_path: Path) -> dict[str, Any]:
+    """
+    Load characters and sessions directly from gemini_output.json.
+
+    Args:
+        gemini_output_path: Path to gemini_output.json
+
+    Returns:
+        Payload with 'characters' and 'sessions' keys
+    """
+    if not gemini_output_path.exists():
+        raise FileNotFoundError(f"Gemini output not found: {gemini_output_path}")
+
+    data = json.loads(gemini_output_path.read_text(encoding="utf-8"))
+
+    return {
+        'characters': data.get('characters', []),
+        'sessions': data.get('sessions', []),
+    }
 
 
 def load_classified_data_and_sessions(
@@ -187,6 +214,9 @@ def aggregate_speakers(payload: dict[str, Any], unique_key: str = "KEY") -> list
     by_key, by_name = build_character_indexes(characters, unique_key)
 
     speakers: dict[str, dict[str, Any]] = {}
+    speakers_without_metadata: set[str] = set()
+
+    print(f"Processing {len(sessions)} sessions...")
 
     for session in sessions:
         session_id = normalise_label(session.get("session_id")) or None
@@ -220,9 +250,22 @@ def aggregate_speakers(payload: dict[str, Any], unique_key: str = "KEY") -> list
 
                 if metadata:
                     merge_metadata(entry["metadata"], metadata)
+                else:
+                    # Track speakers without metadata
+                    if speaker_name not in speakers_without_metadata:
+                        speakers_without_metadata.add(speaker_name)
+
+    # Report speakers without metadata
+    if speakers_without_metadata:
+        print(f"\n⚠ Warning: {len(speakers_without_metadata)} speaker(s) found in sessions but not in characters list:")
+        for speaker in sorted(speakers_without_metadata):
+            print(f"  - {speaker}")
+        print(f"These speakers will be included with empty metadata.\n")
 
     speaker_list = list(speakers.values())
     speaker_list.sort(key=lambda item: item["speaker"].lower())
+
+    print(f"Total unique speakers: {len(speaker_list)}")
     return speaker_list
 
 
@@ -240,7 +283,16 @@ def main() -> None:
     if schema:
         args.unique_key = schema.get("unique_id", args.unique_key)
 
-    payload = load_classified_data_and_sessions(args.classified_data, args.sessions_dir)
+    # Load data: prioritize gemini_output if provided
+    if args.gemini_output:
+        print(f"Loading from gemini_output: {args.gemini_output}")
+        payload = load_gemini_output(args.gemini_output)
+    else:
+        print(f"Loading from classified_data + sessions_dir")
+        print(f"  classified_data: {args.classified_data}")
+        print(f"  sessions_dir: {args.sessions_dir}")
+        payload = load_classified_data_and_sessions(args.classified_data, args.sessions_dir)
+
     aggregated = aggregate_speakers(payload, args.unique_key)
     save_output(args.output, aggregated)
 

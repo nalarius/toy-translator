@@ -132,7 +132,15 @@ def write_xlsx(rows: List[Dict[str, Any]], headers: List[str], path: Path) -> No
 
     sheet.append(headers)
     for row in rows:
-        sheet.append([row.get(header, "") for header in headers])
+        # Convert actual newlines to literal \n for Excel display
+        row_values = []
+        for header in headers:
+            value = row.get(header, "")
+            if isinstance(value, str):
+                # Replace actual newline with literal \n
+                value = value.replace('\n', '\\n')
+            row_values.append(value)
+        sheet.append(row_values)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)

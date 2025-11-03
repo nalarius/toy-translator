@@ -75,6 +75,7 @@ def load_session(path: Path) -> Dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if "characters" not in payload or "session" not in payload:
         raise ValueError("Session file must contain 'characters' and 'session' keys.")
+    # acting_guide is optional - will be included if present
     return payload
 
 
@@ -140,6 +141,59 @@ def format_persona_summary(characters: List[Dict[str, Any]], unique_key: str = "
     return "\n".join(lines)
 
 
+def format_acting_guide(acting_guide: Dict[str, Any]) -> str:
+    """Format acting guide for the translation prompt."""
+    lines: List[str] = []
+
+    # Scene overview
+    if "scene_overview" in acting_guide:
+        lines.append(f"Scene Overview: {acting_guide['scene_overview']}")
+
+    # Emotional arc
+    if "emotional_arc" in acting_guide:
+        lines.append(f"Emotional Arc: {acting_guide['emotional_arc']}")
+
+    # Pacing
+    if "pacing" in acting_guide:
+        lines.append(f"Pacing: {acting_guide['pacing']}")
+
+    # Tone
+    if "tone" in acting_guide:
+        lines.append(f"Tone: {acting_guide['tone']}")
+
+    # Subtext
+    if "subtext" in acting_guide:
+        lines.append(f"Subtext: {acting_guide['subtext']}")
+
+    # Key moments
+    if "key_moments" in acting_guide and acting_guide["key_moments"]:
+        lines.append("\nKey Moments:")
+        for moment in acting_guide["key_moments"]:
+            line_range = moment.get("line_range", [])
+            description = moment.get("description", "")
+            emotion = moment.get("emotion", "")
+            acting_note = moment.get("acting_note", "")
+
+            range_str = f"Lines {line_range[0]}-{line_range[1]}" if len(line_range) == 2 else "Unknown range"
+            lines.append(f"  • {range_str}: {description}")
+            if emotion:
+                lines.append(f"    Emotion: {emotion}")
+            if acting_note:
+                lines.append(f"    Acting note: {acting_note}")
+
+    # Character dynamics
+    if "character_dynamics" in acting_guide and acting_guide["character_dynamics"]:
+        lines.append("\nCharacter Dynamics:")
+        for character, dynamic in acting_guide["character_dynamics"].items():
+            lines.append(f"  • {character}: {dynamic}")
+
+    # Translation notes
+    if "translation_notes" in acting_guide:
+        lines.append(f"\nTranslation Notes: {acting_guide['translation_notes']}")
+
+    return "\n".join(lines)
+
+
 def format_dialogue(session: Dict[str, Any], character_index: Dict[str, Dict[str, Any]], unique_key: str = "KEY") -> str:
     blocks: List[str] = []
     turns = session.get("turns", [])
@@ -166,6 +220,7 @@ def format_dialogue(session: Dict[str, Any], character_index: Dict[str, Dict[str
 def build_prompt(session_data: Dict[str, Any], unique_key: str = "KEY") -> str:
     characters = session_data["characters"]
     session = session_data["session"]
+    acting_guide = session_data.get("acting_guide")  # Optional
 
     persona_section = format_persona_summary(characters, unique_key)
     character_index = build_characters_index(characters)
@@ -182,13 +237,28 @@ def build_prompt(session_data: Dict[str, Any], unique_key: str = "KEY") -> str:
   ]
 }}"""
 
+    # Build acting guide section if available
+    acting_guide_section = ""
+    if acting_guide:
+        acting_guide_text = format_acting_guide(acting_guide)
+        acting_guide_section = f"""
+Acting Guide:
+{acting_guide_text}
+
+IMPORTANT: Use this acting guide to inform your translation choices. Translate each line
+as if you were directing actors to perform this scene. Consider the emotional flow,
+character dynamics, and subtext when choosing words and phrasing. The translation should
+feel like a performance that captures the scene's dramatic intent, not just literal word
+conversion.
+"""
+
     instructions = f"""
 You are a professional localisation translator. Translate the dialogue session into natural,
 fluent English while preserving persona voice and all structural markers.
 
 Personas:
 {persona_section}
-
+{acting_guide_section}
 Instructions:
 - Output must be JSON matching exactly this structure:
 {expected_json}
@@ -530,9 +600,13 @@ def translate_file(
     session_id = session.get('session_id', input_path.stem)
     character_index = build_characters_index(characters)
 
+    # Check if acting guide is present
+    has_acting_guide = "acting_guide" in session_data
+    guide_status = "with acting guide" if has_acting_guide else "without acting guide"
+
     prompt = build_prompt(session_data, unique_key)
 
-    safe_print(f"[{session_id}] Starting translation ({len(session.get('turns', []))} turns)...")
+    safe_print(f"[{session_id}] Starting translation ({len(session.get('turns', []))} turns, {guide_status})...")
 
     # Retry logic with exponential backoff
     max_retries = 3

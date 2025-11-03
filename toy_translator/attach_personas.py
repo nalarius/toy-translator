@@ -78,6 +78,30 @@ def collect_session_speakers(session: Dict[str, Any]) -> List[str]:
     return ordered
 
 
+def create_fallback_persona(speaker: str) -> Dict[str, Any]:
+    """Create a basic fallback persona for speakers without persona data."""
+    # Use the speaker name as english_name if it's ASCII, otherwise keep it as-is
+    english_name = speaker if all(ord(c) < 128 for c in speaker) else speaker
+
+    return {
+        "speaker": speaker,
+        "english_name": english_name,
+        "KEY": "UNKNOWN",
+        "persona": {
+            "gender": "unknown",
+            "age_range": "unknown",
+            "occupation": "unknown",
+            "speech_style": "Inferred from context. No specific style information available.",
+            "personality": "No specific personality traits available. Translate naturally based on dialogue.",
+            "relationships": "Unknown",
+            "translation_notes": (
+                f"No persona data available for '{speaker}'. Translate naturally based on "
+                "context and dialogue content."
+            ),
+        },
+    }
+
+
 def attach_personas_to_session(
     session: Dict[str, Any],
     persona_index: Dict[str, Dict[str, Any]],
@@ -86,13 +110,22 @@ def attach_personas_to_session(
     speakers = collect_session_speakers(session_copy)
 
     characters: List[Dict[str, Any]] = []
+    missing_personas: List[str] = []
+
     for speaker in speakers:
         if speaker not in persona_index:
-            raise ValueError(
-                f"No persona found for speaker '{speaker}' in session "
-                f"'{session_copy.get('session_id', 'UNKNOWN')}'."
-            )
-        characters.append(persona_index[speaker])
+            # Create fallback persona instead of raising error
+            missing_personas.append(speaker)
+            characters.append(create_fallback_persona(speaker))
+        else:
+            characters.append(persona_index[speaker])
+
+    # Warn about missing personas
+    if missing_personas:
+        session_id = session_copy.get('session_id', 'UNKNOWN')
+        print(f"  ⚠ Warning: Session '{session_id}' has {len(missing_personas)} speaker(s) without persona data:")
+        for speaker in missing_personas:
+            print(f"    - {speaker} (using fallback persona)")
 
     enriched = {
         "characters": characters,
